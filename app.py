@@ -4,6 +4,8 @@ from ctypes import wintypes
 import json
 import os
 from pathlib import Path
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -15,7 +17,7 @@ from PySide6.QtCore import QAbstractNativeEventFilter, QEvent, QObject, QLocale,
 from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QColorDialog, QComboBox, QDialog, QFontComboBox, QSpinBox, QKeySequenceEdit,
-    QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
+    QFileDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
     QPushButton, QSlider, QSystemTrayIcon, QTabWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -59,6 +61,12 @@ DEFAULT_SHORTCUTS = {
 HOTKEY_ACTIONS = tuple(DEFAULT_SHORTCUTS)
 IMAGE_NAMES = {"Previous": "Previous.png", "Next": "Next.png",
                "Pause": "pause.png", "Stop": "stop.png"}
+BUTTON_ICON_NAMES = {
+    "listen": "play.png", "add_saved": "plus.png", "add_custom": "plus.png",
+    "remove": "minus.png", "add": "plus.png", "find_stations": "plus.png",
+    "minimize": "minus.png", "close": "close.png", "preferences": "gear.png",
+    "analyze_song": "question.png",
+}
 DEFAULTS = [
     {"Name": "Akustika", "Url": "http://ic3.101.ru:8000/c16_34", "Included": True},
     {"Name": "Rock Hits", "Url": "http://icecast.radiomaximum.cdnvideo.ru/st25.mp3", "Included": True},
@@ -66,7 +74,58 @@ DEFAULTS = [
     {"Name": "Chillout", "Url": "http://ic7.101.ru:8000/c15_3", "Included": False},
 ]
 EXTRACTOR_HOSTS = ("youtube.com", "youtu.be", "soundcloud.com", "mixcloud.com",
-                   "bandcamp.com", "twitch.tv", "vimeo.com")
+                    "bandcamp.com", "twitch.tv", "vimeo.com")
+STATION_FILE_FORMAT = "RadioPlusPlus-station-v1"
+BACKUP_FILE_FORMAT = "RadioPlusPlus-stations-backup-v1"
+
+
+def valid_station(data):
+    if not isinstance(data, dict):
+        raise ValueError("invalid_station")
+    name, url = data.get("Name"), data.get("Url")
+    if not isinstance(name, str) or not name.strip() or not isinstance(url, str):
+        raise ValueError("invalid_station")
+    parsed = urlparse(url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("invalid_station")
+    if any(key in data and not isinstance(data[key], bool) for key in ("Included", "UseYtDlp")):
+        raise ValueError("invalid_station")
+    return {"Name": name.strip(), "Url": url.strip(),
+            "Included": data.get("Included", True),
+            "UseYtDlp": data.get("UseYtDlp", False)}
+
+
+def read_station_file(path, expected_format):
+    if Path(path).stat().st_size > 2_000_000:
+        raise ValueError("invalid_file")
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict) or data.get("format") != expected_format:
+        raise ValueError("invalid_file")
+    if expected_format == STATION_FILE_FORMAT:
+        return valid_station(data.get("station"))
+    stations = data.get("stations")
+    if not isinstance(stations, list) or len(stations) > 5000:
+        raise ValueError("invalid_file")
+    result = [valid_station(station) for station in stations]
+    if len({station["Url"] for station in result}) != len(result):
+        raise ValueError("invalid_file")
+    return result
+
+
+def write_station_file(path, format_name, stations):
+    key = "station" if format_name == STATION_FILE_FORMAT else "stations"
+    Path(path).write_text(json.dumps({"format": format_name, key: stations},
+                                     ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def station_filename(name):
+    filename = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name).strip(" .")
+    filename = filename[:100].rstrip(" .") or "radio-station"
+    if filename.split(".")[0].upper() in {"CON", "PRN", "AUX", "NUL",
+                                           *(f"COM{n}" for n in range(1, 10)),
+                                           *(f"LPT{n}" for n in range(1, 10))}:
+        filename = "_" + filename
+    return filename + ".json"
 
 
 def needs_extractor(station):
@@ -102,13 +161,36 @@ def asset_path(name):
     return Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / name
 
 
+def extract_resources():
+    source = asset_path("resources")
+    destination = CONFIG.parent / "resources"
+    if not source.is_dir():
+        return
+    for file in source.rglob("*"):
+        if file.is_file():
+            target = destination / file.relative_to(source)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists():
+                    shutil.copy2(file, target)
+            except OSError:
+                # Read-only profiles can still use the bundled resources.
+                pass
+
+
+def resource_path(name):
+    user_file = CONFIG.parent / "resources" / name
+    return user_file if user_file.is_file() else asset_path(f"resources/{name}")
+
+
 def pack_path(pack, name):
-    folder = Path("resources") / "icons" / pack
+    folder = Path("icons") / pack
     candidates = [
-        Path(sys.executable).parent / folder / name if getattr(sys, "frozen", False) else
-        Path(__file__).parent / folder / name,
+        CONFIG.parent / "resources" / folder / name,
         CONFIG.parent / "iconpacks" / pack / name,
-        asset_path(f"resources/icons/default/{name}"),
+        Path(sys.executable).parent / "resources" / folder / name if getattr(sys, "frozen", False) else
+        Path(__file__).parent / "resources" / folder / name,
+        resource_path(f"icons/default/{name}"),
     ]
     return next((path for path in candidates if path.is_file()), candidates[-1])
 
@@ -127,6 +209,17 @@ def tinted_icon(name, color, pack="default", size=25):
     painter.fillRect(result.rect(), QColor(color))
     painter.end()
     return QIcon(result)
+
+
+def icon_button(button, name, radio, size=20, icon_only=False):
+    button.setText("" if icon_only else radio.tr(name))
+    if icon_only:
+        button.setToolTip(radio.tr(name))
+        button.setAccessibleName(radio.tr(name))
+    button.setIcon(tinted_icon(BUTTON_ICON_NAMES[name], radio.config["IconColor"],
+                               radio.config["IconPack"], size))
+    button.setIconSize(QSize(size, size))
+    button.setProperty("radioIcon", name)
 
 
 def shortcut_parts(text):
@@ -333,7 +426,8 @@ class StationDialog(QDialog):
         layout.addRow(radio.tr("url"), self.url)
         self.extract = QCheckBox(radio.tr("yt_resolve"))
         layout.addRow(self.extract)
-        button = QPushButton(radio.tr("add"))
+        button = QPushButton()
+        icon_button(button, "add", radio)
         button.clicked.connect(self.submit)
         layout.addRow(button)
 
@@ -366,10 +460,12 @@ class Manager(QMainWindow):
         title = QLabel("◉  RADIO++  /  EXPLORAR")
         title.installEventFilter(self)
         title_layout.addWidget(title, 1)
-        minimize = QPushButton("—")
+        minimize = QPushButton()
+        icon_button(minimize, "minimize", radio, 16, icon_only=True)
         minimize.setFixedSize(34, 30)
         minimize.clicked.connect(self.showMinimized)
-        close = QPushButton("×")
+        close = QPushButton()
+        icon_button(close, "close", radio, 16, icon_only=True)
         close.setFixedSize(34, 30)
         close.clicked.connect(self.close)
         title_layout.addWidget(minimize)
@@ -403,11 +499,12 @@ class Manager(QMainWindow):
         self.results = self.table()
         find_layout.addWidget(self.results)
         row = QHBoxLayout()
-        for text, action in (
-            (radio.tr("listen"), lambda: self.listen(self.results)),
-            (radio.tr("add_saved"), self.add_selected),
+        for key, action in (
+            ("listen", lambda: self.listen(self.results)),
+            ("add_saved", self.add_selected),
         ):
-            button = QPushButton(text)
+            button = QPushButton()
+            icon_button(button, key, radio)
             button.clicked.connect(action)
             row.addWidget(button)
         find_layout.addLayout(row)
@@ -422,15 +519,23 @@ class Manager(QMainWindow):
         self.saved = self.table()
         own_layout.addWidget(self.saved)
         row = QHBoxLayout()
-        for text, action in (
-            (radio.tr("listen"), lambda: self.listen(self.saved)),
-            (radio.tr("add_custom"), self.add_custom),
-            (radio.tr("remove"), self.remove_selected),
+        for key, action in (
+            ("listen", lambda: self.listen(self.saved)),
+            ("add_custom", self.add_custom),
+            ("remove", self.remove_selected),
         ):
-            button = QPushButton(text)
+            button = QPushButton()
+            icon_button(button, key, radio)
             button.clicked.connect(action)
             row.addWidget(button)
         own_layout.addLayout(row)
+        share_row = QHBoxLayout()
+        for text, action in ((radio.tr("import_station"), self.import_station),
+                             (radio.tr("share_station"), self.share_station)):
+            button = QPushButton(text)
+            button.clicked.connect(action)
+            share_row.addWidget(button)
+        own_layout.addLayout(share_row)
         self.saved.cellDoubleClicked.connect(lambda *_: self.listen(self.saved))
         self.signals = SearchSignals(self)
         self.signals.finished.connect(self.receive)
@@ -555,6 +660,37 @@ class Manager(QMainWindow):
             self.radio.remove(station)
             self.show_saved()
 
+    def import_station(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.radio.tr("import_station"), "", self.radio.tr("json_files"))
+        if not path:
+            return
+        try:
+            station = read_station_file(path, STATION_FILE_FORMAT)
+            if any(s["Url"] == station["Url"] for s in self.radio.config["Stations"]):
+                QMessageBox.information(self, "Radio++", self.radio.tr("already_saved"))
+                return
+            self.radio.add(station)
+            self.show_saved()
+        except (OSError, ValueError, UnicodeError) as exc:
+            QMessageBox.warning(self, "Radio++", self.radio.tr(
+                "import_failed", error=self.radio.tr(str(exc))))
+
+    def share_station(self):
+        station = self.selected(self.saved)
+        if not station:
+            QMessageBox.information(self, "Radio++", self.radio.tr("select_station"))
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, self.radio.tr("share_station"), station_filename(station["Name"]),
+            self.radio.tr("json_files"))
+        if path:
+            try:
+                write_station_file(path, STATION_FILE_FORMAT, valid_station(station))
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Radio++", self.radio.tr(
+                    "export_failed", error=self.radio.tr(str(exc))))
+
 class PreferencesPage(QWidget):
     def __init__(self, radio):
         super().__init__()
@@ -565,9 +701,11 @@ class PreferencesPage(QWidget):
         appearance = QWidget()
         shortcuts = QWidget()
         language_page = QWidget()
+        security_page = QWidget()
         sections.addTab(appearance, radio.tr("appearance"))
         sections.addTab(shortcuts, radio.tr("shortcuts"))
         sections.addTab(language_page, radio.tr("languages"))
+        sections.addTab(security_page, radio.tr("security"))
         form = QFormLayout(appearance)
         form.setSpacing(14)
         form.setContentsMargins(22, 22, 22, 22)
@@ -604,7 +742,8 @@ class PreferencesPage(QWidget):
             lambda checked: self.color_AccentColor.setEnabled(not checked))
         self.packs = QComboBox()
         pack_names = {"default"}
-        for base in (asset_path("resources/icons"), CONFIG.parent / "iconpacks",
+        for base in (CONFIG.parent / "resources" / "icons", CONFIG.parent / "iconpacks",
+                     asset_path("resources/icons"),
                      Path(sys.executable).parent / "resources" / "icons"):
             if base.is_dir():
                 pack_names.update(path.name for path in base.iterdir() if path.is_dir())
@@ -635,6 +774,52 @@ class PreferencesPage(QWidget):
         selector.currentIndexChanged.connect(lambda: radio.set_language(selector.currentData()))
         language_form.addRow(radio.tr("language"), selector)
         language_form.addRow(QLabel(radio.tr("language_hint")))
+        security_layout = QVBoxLayout(security_page)
+        security_layout.setContentsMargins(22, 22, 22, 22)
+        security_layout.setSpacing(14)
+        security_layout.addWidget(QLabel(radio.tr("backup_header")))
+        explanation = QLabel(radio.tr("backup_hint"))
+        explanation.setWordWrap(True)
+        security_layout.addWidget(explanation)
+        for key, handler in (("save_backup", self.save_backup),
+                             ("restore_backup", self.restore_backup)):
+            button = QPushButton(radio.tr(key))
+            button.clicked.connect(handler)
+            security_layout.addWidget(button)
+        security_layout.addStretch()
+
+    def save_backup(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, self.radio.tr("save_backup"), "radio-stations-backup.json",
+            self.radio.tr("json_files"))
+        if path:
+            try:
+                stations = [valid_station(station) for station in self.radio.config["Stations"]]
+                write_station_file(path, BACKUP_FILE_FORMAT, stations)
+            except (OSError, ValueError) as exc:
+                QMessageBox.warning(self, "Radio++", self.radio.tr(
+                    "export_failed", error=self.radio.tr(str(exc))))
+
+    def restore_backup(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.radio.tr("restore_backup"), "", self.radio.tr("json_files"))
+        if not path:
+            return
+        try:
+            stations = read_station_file(path, BACKUP_FILE_FORMAT)
+        except (OSError, ValueError, UnicodeError) as exc:
+            QMessageBox.warning(self, "Radio++", self.radio.tr(
+                "import_failed", error=self.radio.tr(str(exc))))
+            return
+        if QMessageBox.question(self, "Radio++", self.radio.tr("replace_stations"),
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        self.radio.stop()
+        self.radio.config["Stations"] = stations
+        self.radio.save()
+        self.radio.window.show_saved()
+        self.radio.popup.refresh()
 
     def update_swatch(self, button, value):
         button.setText(value.upper() + "   ●")
@@ -686,11 +871,22 @@ class Popup(QWidget):
         self.now.setObjectName("nowPlaying")
         self.now.setMinimumHeight(48)
         layout.addWidget(self.now)
+        song_row = QHBoxLayout()
+        song_row.setContentsMargins(0, 0, 0, 0)
+        song_row.setSpacing(6)
         self.song = QLabel()
         self.song.setObjectName("songTitle")
         self.song.setWordWrap(False)
         self.song.setFixedHeight(30)
-        layout.addWidget(self.song)
+        song_row.addWidget(self.song, 1)
+        analyze = QPushButton()
+        analyze.setObjectName("songAnalyze")
+        analyze.setFixedSize(30, 30)
+        icon_button(analyze, "analyze_song", radio, 20, icon_only=True)
+        analyze.clicked.connect(lambda: QMessageBox.information(
+            self, "Radio++", radio.tr("analysis_unavailable")))
+        song_row.addWidget(analyze)
+        layout.addLayout(song_row)
         self.stations = QListWidget()
         self.stations.setObjectName("stationList")
         self.stations.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
@@ -707,6 +903,7 @@ class Popup(QWidget):
             ("Next", radio.tr("next"), radio.next),
         ):
             button = QPushButton()
+            button.setObjectName("playbackControl")
             button.setFixedHeight(42)
             button.setToolTip(title)
             button.setAccessibleName(title)
@@ -723,12 +920,13 @@ class Popup(QWidget):
         layout.addWidget(volume_label)
         layout.addWidget(self.volume)
         actions = QHBoxLayout()
-        manager = QPushButton(radio.tr("find_stations"))
+        manager = QPushButton()
+        icon_button(manager, "find_stations", radio)
         manager.clicked.connect(radio.open_manager)
         actions.addWidget(manager, 1)
-        gear = QPushButton("⚙")
-        gear.setToolTip(radio.tr("preferences"))
-        gear.setAccessibleName(radio.tr("preferences"))
+        gear = QPushButton()
+        gear.setObjectName("playbackControl")
+        icon_button(gear, "preferences", radio, 25, icon_only=True)
         gear.setFixedWidth(48)
         gear.clicked.connect(radio.open_preferences)
         actions.addWidget(gear)
@@ -794,6 +992,11 @@ class Popup(QWidget):
                 else "play.png" if action == "Pause" else IMAGE_NAMES[action]
             button.setIcon(tinted_icon(name, color, pack))
             button.setIconSize(QPixmap(25, 25).size())
+        for button in self.findChildren(QPushButton):
+            name = button.property("radioIcon")
+            if name:
+                button.setIcon(tinted_icon(BUTTON_ICON_NAMES[name], color, pack,
+                                           button.iconSize().width()))
 
     def select(self, item):
         self.radio.play(item.data(Qt.ItemDataRole.UserRole))
@@ -801,6 +1004,7 @@ class Popup(QWidget):
 class RadioApp:
     def __init__(self):
         self.qt = QApplication(sys.argv)
+        extract_resources()
         self.hotkey_filter = WindowsHotkeyFilter(self)
         self.qt.installNativeEventFilter(self.hotkey_filter)
         self.qt.setWindowIcon(QIcon(str(pack_path("default", "radio-original.png"))))
@@ -853,13 +1057,17 @@ class RadioApp:
 
     @staticmethod
     def load_translations(language):
-        path = asset_path(f"resources/languages/i18n/{language}.json")
-        fallback = asset_path("resources/languages/i18n/en.json")
-        try:
-            english = json.loads(fallback.read_text(encoding="utf-8"))
-            return {**english, **json.loads(path.read_text(encoding="utf-8"))}
-        except (OSError, ValueError):
-            return {}
+        translations = {}
+        for code in ("en", language):
+            for path in (asset_path(f"resources/languages/i18n/{code}.json"),
+                         CONFIG.parent / "resources" / "languages" / "i18n" / f"{code}.json"):
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        translations.update(data)
+                except (OSError, ValueError):
+                    pass
+        return translations
 
     def tr(self, key, **values):
         text = self.translations.get(key, key)
@@ -946,6 +1154,20 @@ class RadioApp:
                 border-radius: 8px; padding: 8px 12px; font-weight: 600;
             }}
             QPushButton:hover {{ border-color: {text}; }}
+            QWidget#radioPopup QPushButton#playbackControl {{
+                background: transparent; border: none; padding: 8px;
+            }}
+            QWidget#radioPopup QPushButton#playbackControl:hover {{
+                background: transparent; border: none;
+            }}
+            QWidget#radioPopup QPushButton#playbackControl:pressed {{
+                background: transparent; border: none;
+            }}
+            QWidget#radioPopup QPushButton#songAnalyze,
+            QWidget#radioPopup QPushButton#songAnalyze:hover,
+            QWidget#radioPopup QPushButton#songAnalyze:pressed {{
+                background: transparent; border: none; padding: 0;
+            }}
             QLineEdit, QComboBox {{
                 background: {surface}; border: 1px solid {border};
                 border-radius: 8px; padding: 8px; selection-background-color: {selected};
@@ -1001,6 +1223,12 @@ class RadioApp:
             }}
         """)
         self.popup.update_icons()
+        for button in self.window.findChildren(QPushButton):
+            name = button.property("radioIcon")
+            if name:
+                button.setIcon(tinted_icon(BUTTON_ICON_NAMES[name],
+                                           colors["IconColor"], colors["IconPack"],
+                                           button.iconSize().width()))
         self.tray.setIcon(QIcon(str(pack_path(self.config["IconPack"], "radio-original.png"))))
 
     def show_popup(self):

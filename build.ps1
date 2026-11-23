@@ -16,11 +16,20 @@ if (-not (Test-Path $dll)) {
 }
 if (-not (Test-Path $dll)) { throw 'No se encontró libmpv-2.dll en el paquete descargado.' }
 
+$dist = Join-Path $root 'dist'
+$baseName = 'RadioPlusPlus-Qt'
+$buildName = $baseName
+$number = 1
+while (Test-Path (Join-Path $dist "$buildName.exe")) {
+    $buildName = "$baseName-v$number"
+    $number++
+}
+
 python -m PyInstaller --noconfirm --clean --onefile --windowed `
-    --name RadioPlusPlus-Qt-v14 --icon (Join-Path $root 'resources\icons\default\radio-original.ico') `
+    --name $buildName --icon (Join-Path $root 'resources\icons\default\radio-original.ico') `
     --add-data "$(Join-Path $root 'resources');resources" `
     --collect-submodules yt_dlp --copy-metadata yt-dlp --hidden-import unicodedata `
     --exclude-module requests --exclude-module urllib3 --exclude-module curl_cffi `
     --add-binary "$dll;." (Join-Path $root 'app.py')
 if ($LASTEXITCODE -ne 0) { throw 'No se pudo generar el ejecutable.' }
-Write-Host "Listo: $(Join-Path $root 'dist\RadioPlusPlus-Qt-v14.exe')"
+Write-Host "Listo: $(Join-Path $dist "$buildName.exe")"
