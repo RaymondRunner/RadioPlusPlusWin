@@ -1,33 +1,42 @@
-# Radio++ para Windows
+# Radio++ for Windows
 
-Aplicación de radio para Windows con interfaz **Qt/PySide6**, reproducción mediante **libmpv** y búsqueda en el directorio público [Radio Browser](https://www.radio-browser.info/).
+A Windows radio player built with Qt/PySide6 and libmpv. Discover stations through [Radio Browser](https://www.radio-browser.info/), or add your own URLs. Inspired by the [Radio++ Cinnamon applet](https://github.com/linuxmint/cinnamon-spices-applets/tree/092e3f889e27dc98ee3734651bd777efb286c95d/radio%40driglu4it).
 
-## Funciones
+## Features
 
-- Buscar y escuchar radios antes de guardarlas.
-- Añadir estaciones del catálogo con `+`, introducir emisoras propias con nombre y URL y eliminarlas con `−`.
-- Reproductor emergente desde el icono de la bandeja: reproducir, pausar, detener y ajustar el volumen.
-- Personalizar fuentes, tamaños y colores desde el botón ⚙ del reproductor.
-- Preferencias y emisoras guardadas entre ejecuciones en `%APPDATA%\RadioPlusPlusQt\settings.json`. La primera vez se importan los ajustes de una versión anterior de Radio++ si existen.
+- Starts in the system tray. Hover over or click its icon to open the player.
+- Browse stations, listen before saving, add your own URLs, and remove saved stations.
+- A visible station list shows up to seven rows; its vertical scrollbar appears when needed.
+- Previous, play/pause, stop, and next controls use tintable PNG icons from `resources/icons/default/`.
+- Global, configurable keyboard shortcuts work while the main window is hidden: `Ctrl+Alt+Left` (previous), `Ctrl+Alt+Right` (next), `Ctrl+Alt+P` (play/pause), and `Ctrl+Alt+S` (stop). Windows will report shortcuts already claimed by other applications.
+- **Preferences → Appearance** controls fonts, colors, and icon packs. **Preferences → Shortcuts** customizes keys. **Preferences → Languages** offers English, Spanish, and French; changing language restarts the app in the tray.
+- yt-dlp resolves supported page links (including YouTube) in the background. Direct radio streams go straight to mpv. When adding your own station, you can explicitly enable yt-dlp for its URL.
 
-## Compilar en Windows
+## Build on Windows
 
-Requiere **Python 3.13**, Windows de 64 bits y conexión a Internet durante la compilación:
+Requires 64-bit Windows, Python 3.13, and internet access for initial dependencies:
 
 ```powershell
 python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-El script descarga una versión fija de libmpv de NuGet y comprueba su SHA-256; después genera `dist\RadioPlusPlus-Qt.exe`. El ejecutable es independiente de Python y extrae temporalmente sus componentes al abrirlo.
+The script downloads a pinned libmpv NuGet package, verifies its SHA-256, and builds `dist\RadioPlusPlus-Qt-v10.exe`, which includes Python, yt-dlp, the default icon pack, and the translations. The single-file executable extracts its contents to a temporary directory when launched.
 
-Para ejecutarlo desde el código fuente, compila primero para obtener libmpv o coloca `libmpv-2.dll` junto a `app.py`, y usa `python app.py`.
+To run from source, place `libmpv-2.dll` alongside `app.py` and run `python app.py`.
 
-## Publicar
+Settings and saved stations are stored at `%APPDATA%\RadioPlusPlusQt\settings.json`. On first launch, settings from the earlier Radio++ Windows version are imported if present.
 
-Sube los archivos fuente de esta carpeta al repositorio. `dist/` contiene el ejecutable local pero está excluido por `.gitignore`: si quieres distribuirlo, súbelo como **archivo de GitHub Releases**, no dentro del historial Git.
+## Icon packs and translations
 
-El icono `radio-original.png` procede del [applet Radio++ de Cinnamon](https://github.com/linuxmint/cinnamon-spices-applets/tree/092e3f889e27dc98ee3734651bd777efb286c95d/radio%40driglu4it); `radio-original.ico` es una conversión del mismo icono. Respeta las condiciones de licencia del proyecto original al redistribuir sus recursos.
+Create `resources/icons/YOUR_PACK/` next to the executable, or `%APPDATA%\RadioPlusPlusQt\iconpacks\YOUR_PACK\`, with PNG files named `Previous.png`, `Next.png`, `pause.png`, `play.png`, and `stop.png`. Select your pack under Appearance. PNG transparency is retained when recoloring; missing files fall back to the built-in default pack. The executable icon comes from `resources/icons/default/radio-original.ico`.
 
-## Note
-> This project was "vibecoded" Inspired by the Radio++ Applet For Cinnamon By jonath92. 
+Translations are JSON files in `resources/languages/i18n/`. Add a new language by copying an existing file and registering its language code in `PreferencesPage` and `RadioApp.load()`. Missing keys fall back to English.
+
+`dist/` is ignored by Git. To distribute the executable, attach it to a GitHub Release instead of committing it to the repository.
+
+## License
+
+See [LICENSE](LICENSE). Check the redistribution terms for any icons or other assets you add.
+
+> Note: This project was "vibecoded", inspired by the Radio++ applet for Cinnamon.
