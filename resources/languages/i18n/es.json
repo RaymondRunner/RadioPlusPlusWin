@@ -42,6 +42,7 @@
   "language": "Idioma",
   "language_hint": "La aplicación se reinicia para cambiar de idioma.",
   "not_playing": "Sin reproducción",
+  "no_song": "Sin canción",
   "volume": "VOLUMEN",
   "find_stations": "＋ Buscar emisoras",
   "no_audio": "yt-dlp no encontró audio para esta URL.",
@@ -66,6 +67,7 @@
   "window_background": "Fondo de la ventana",
   "surface_color": "Tablas y campos",
   "accent_color": "Acento y botones",
+  "windows_accent": "Usar color de énfasis de Windows",
   "muted_color": "Texto secundario",
   "border_color": "Bordes",
   "selected_color": "Fila seleccionada"

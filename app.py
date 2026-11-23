@@ -35,6 +35,21 @@ COLORS = {
     "PlayingColor": ("Emisora activa", "#a9d68e"),
     "IconColor": ("Iconos del reproductor", "#f0f3ef"),
 }
+
+
+def windows_accent_color():
+    if sys.platform != "win32":
+        return None
+    value = wintypes.DWORD()
+    opaque = wintypes.BOOL()
+    try:
+        result = ctypes.windll.dwmapi.DwmGetColorizationColor(
+            ctypes.byref(value), ctypes.byref(opaque))
+        if result != 0:
+            return None
+        return f"#{value.value & 0xFFFFFF:06x}"
+    except (AttributeError, OSError):
+        return None
 DEFAULT_SHORTCUTS = {
     "Previous": "Ctrl+Alt+Left",
     "Next": "Ctrl+Alt+Right",
@@ -154,6 +169,8 @@ class WindowsHotkeyFilter(QAbstractNativeEventFilter):
                 action = HOTKEY_ACTIONS[msg.wParam - 1]
                 QTimer.singleShot(0, lambda name=action: self.radio.run_action(name))
                 return True, 0
+            if msg.message == 0x0320 and getattr(self.radio, "config", {}).get("UseWindowsAccent"):
+                QTimer.singleShot(0, self.radio.apply_style)
         return False, 0
 
 
@@ -193,6 +210,9 @@ class Audio:
         self.lib.mpv_initialize.argtypes = [ctypes.c_void_p]
         self.lib.mpv_command.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char_p)]
         self.lib.mpv_set_property.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_void_p]
+        self.lib.mpv_get_property_string.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        self.lib.mpv_get_property_string.restype = ctypes.c_void_p
+        self.lib.mpv_free.argtypes = [ctypes.c_void_p]
         self.lib.mpv_terminate_destroy.argtypes = [ctypes.c_void_p]
         self.ctx = self.lib.mpv_create()
         if not self.ctx:
@@ -232,6 +252,21 @@ class Audio:
     def volume(self, value):
         number = ctypes.c_double(value)
         self.check(self.lib.mpv_set_property(self.ctx, b"volume", 5, ctypes.byref(number)))
+
+    def song_title(self):
+        if not self.playing:
+            return ""
+        for property_name in (b"metadata/by-key/icy-title", b"metadata/by-key/StreamTitle",
+                              b"metadata/by-key/title"):
+            pointer = self.lib.mpv_get_property_string(self.ctx, property_name)
+            if pointer:
+                try:
+                    title = ctypes.string_at(pointer).decode("utf-8", errors="replace").strip()
+                    if title:
+                        return title
+                finally:
+                    self.lib.mpv_free(pointer)
+        return ""
 
     def close(self):
         self.lib.mpv_terminate_destroy(self.ctx)
@@ -549,7 +584,7 @@ class PreferencesPage(QWidget):
         self.font_size.valueChanged.connect(lambda value: self.update_value("FontSize", value))
         form.addRow(radio.tr("font_size"), self.font_size)
         form.addRow(QLabel(radio.tr("colors_header")))
-        for key, (label, _) in COLORS.items():
+        for key, (_, _) in COLORS.items():
             button = QPushButton()
             button.clicked.connect(lambda _, name=key: self.pick_color(name))
             form.addRow(radio.tr({"TextColor": "text_color", "PanelBackground": "panel_background",
@@ -559,6 +594,14 @@ class PreferencesPage(QWidget):
                                 "PlayingColor": "station_color", "IconColor": "icon_color"}[key]), button)
             self.update_swatch(button, radio.config[key])
             setattr(self, "color_" + key, button)
+        self.windows_accent = QCheckBox(radio.tr("windows_accent"))
+        self.windows_accent.setChecked(radio.config["UseWindowsAccent"])
+        self.windows_accent.toggled.connect(
+            lambda checked: self.update_value("UseWindowsAccent", checked))
+        form.addRow(self.windows_accent)
+        self.color_AccentColor.setEnabled(not radio.config["UseWindowsAccent"])
+        self.windows_accent.toggled.connect(
+            lambda checked: self.color_AccentColor.setEnabled(not checked))
         self.packs = QComboBox()
         pack_names = {"default"}
         for base in (asset_path("resources/icons"), CONFIG.parent / "iconpacks",
@@ -639,16 +682,21 @@ class Popup(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(10)
+        self.now = QLabel(radio.tr("not_playing"))
+        self.now.setObjectName("nowPlaying")
+        self.now.setMinimumHeight(48)
+        layout.addWidget(self.now)
+        self.song = QLabel()
+        self.song.setObjectName("songTitle")
+        self.song.setWordWrap(False)
+        self.song.setFixedHeight(30)
+        layout.addWidget(self.song)
         self.stations = QListWidget()
         self.stations.setObjectName("stationList")
         self.stations.setVerticalScrollMode(QListWidget.ScrollMode.ScrollPerPixel)
         self.stations.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.stations.itemClicked.connect(self.select)
         layout.addWidget(self.stations)
-        self.now = QLabel(radio.tr("not_playing"))
-        self.now.setObjectName("nowPlaying")
-        self.now.setMinimumHeight(48)
-        layout.addWidget(self.now)
         row = QHBoxLayout()
         row.setSpacing(8)
         self.controls = {}
@@ -685,6 +733,10 @@ class Popup(QWidget):
         gear.clicked.connect(radio.open_preferences)
         actions.addWidget(gear)
         layout.addLayout(actions)
+        self.metadata_timer = QTimer(self)
+        self.metadata_timer.setInterval(2000)
+        self.metadata_timer.timeout.connect(self.update_song)
+        self.metadata_timer.start()
         self.refresh()
         mask_rounded(self)
 
@@ -705,21 +757,34 @@ class Popup(QWidget):
             if station.get("Included", True):
                 item = QListWidgetItem(station["Name"])
                 item.setData(Qt.ItemDataRole.UserRole, station)
-                item.setSizeHint(QSize(0, 35))
+                item.setSizeHint(QSize(0, 30))
                 self.stations.addItem(item)
                 if self.radio.current and station["Url"] == self.radio.current["Url"]:
                     active_row = self.stations.count() - 1
         count = self.stations.count()
-        self.stations.setFixedHeight(min(max(count, 1), 7) * 35 + 4)
-        self.setFixedHeight(270 + self.stations.height())
+        screen = self.radio.qt.screenAt(self.pos()) or self.radio.qt.primaryScreen()
+        available = screen.availableGeometry()
+        # Keep the controls and song visible above the Windows taskbar on short screens.
+        list_height = min(max(count, 1), 7) * 30 + 4
+        self.stations.setFixedHeight(min(list_height, max(34, available.height() - 310)))
+        self.setFixedHeight(300 + self.stations.height())
         if active_row is not None:
             self.stations.setCurrentRow(active_row)
         self.stations.verticalScrollBar().setValue(old_scroll)
         self.stations.blockSignals(False)
         self.now.setText(self.radio.current["Name"] if self.radio.current else self.radio.tr("not_playing"))
+        self.update_song()
         playing = self.radio.audio.playing and not self.radio.audio.paused
         self.controls["Pause"].setToolTip(self.radio.tr("pause"))
         self.update_icons()
+
+    def update_song(self):
+        title = self.radio.audio.song_title() if self.radio.current else ""
+        if self.radio.current and title == self.radio.current["Name"]:
+            title = ""
+        if self.song.text() != (title or self.radio.tr("no_song")):
+            self.song.setText(title or self.radio.tr("no_song"))
+            self.song.setToolTip(title)
 
     def update_icons(self):
         color = self.radio.config["IconColor"]
@@ -778,6 +843,7 @@ class RadioApp:
             pass
         for key, (_, default) in COLORS.items():
             base.setdefault(key, default)
+        base.setdefault("UseWindowsAccent", False)
         base.setdefault("Language", QLocale.system().name().split("_")[0])
         if base["Language"] not in ("en", "es", "fr"):
             base["Language"] = "en"
@@ -828,7 +894,7 @@ class RadioApp:
         size = max(7, int(self.config["FontSize"]))
         colors = self.config
         surface = colors["SurfaceColor"]
-        accent = colors["AccentColor"]
+        accent = (windows_accent_color() if colors["UseWindowsAccent"] else None) or colors["AccentColor"]
         muted = colors["MutedColor"]
         border = colors["BorderColor"]
         selected = colors["SelectedColor"]
@@ -871,6 +937,9 @@ class RadioApp:
                 background: {surface}; border: 1px solid {border};
                 border-radius: 8px; padding: 12px; color: {playing_text};
                 font-weight: 600;
+            }}
+            QLabel#songTitle {{
+                color: {panel_text}; padding: 2px 6px; font-weight: 600;
             }}
             QPushButton {{
                 background: {accent}; color: {button_text}; border: 1px solid {border};
@@ -935,13 +1004,13 @@ class RadioApp:
         self.tray.setIcon(QIcon(str(pack_path(self.config["IconPack"], "radio-original.png"))))
 
     def show_popup(self):
-        self.popup.refresh()
-        pos = self.qt.primaryScreen().availableGeometry()
         cursor = __import__("PySide6.QtGui", fromlist=["QCursor"]).QCursor.pos()
         screen = self.qt.screenAt(cursor) or self.qt.primaryScreen()
         pos = screen.availableGeometry()
+        self.popup.move(cursor)
+        self.popup.refresh()
         x = max(pos.left(), min(cursor.x() - self.popup.width() // 2, pos.right() - self.popup.width()))
-        self.popup.move(QPoint(x, pos.bottom() - self.popup.height()))
+        self.popup.move(QPoint(x, max(pos.top(), pos.bottom() + 1 - self.popup.height())))
         self.popup.show()
 
     def open_manager(self):

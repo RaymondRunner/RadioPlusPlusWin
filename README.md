@@ -6,10 +6,10 @@ A Windows radio player built with Qt/PySide6 and libmpv. Discover stations throu
 
 - Starts in the system tray. Hover over or click its icon to open the player.
 - Browse stations, listen before saving, add your own URLs, and remove saved stations.
-- A visible station list shows up to seven rows; its vertical scrollbar appears when needed.
+- The player shows the current station, a permanent song-title line (“No song” when no metadata is available), and a compact station list. The list shows up to seven rows; its vertical scrollbar appears when needed and the popup stays above the Windows taskbar.
 - Previous, play/pause, stop, and next controls use tintable PNG icons from `resources/icons/default/`.
 - Global, configurable keyboard shortcuts work while the main window is hidden: `Ctrl+Alt+Left` (previous), `Ctrl+Alt+Right` (next), `Ctrl+Alt+P` (play/pause), and `Ctrl+Alt+S` (stop). Windows will report shortcuts already claimed by other applications.
-- **Preferences → Appearance** controls fonts, colors, and icon packs. **Preferences → Shortcuts** customizes keys. **Preferences → Languages** offers English, Spanish, and French; changing language restarts the app in the tray.
+- **Preferences → Appearance** controls fonts, colors, and icon packs, and can follow the Windows accent color without losing your manually selected accent. **Preferences → Shortcuts** customizes keys. **Preferences → Languages** offers English, Spanish, and French; changing language restarts the app in the tray.
 - yt-dlp resolves supported page links (including YouTube) in the background. Direct radio streams go straight to mpv. When adding your own station, you can explicitly enable yt-dlp for its URL.
 
 ## Build on Windows
@@ -21,7 +21,7 @@ python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The script downloads a pinned libmpv NuGet package, verifies its SHA-256, and builds `dist\RadioPlusPlus-Qt-v10.exe`, which includes Python, yt-dlp, the default icon pack, and the translations. The single-file executable extracts its contents to a temporary directory when launched.
+The script downloads a pinned libmpv NuGet package, verifies its SHA-256, and builds `dist\RadioPlusPlus-Qt-v14.exe`, which includes Python, yt-dlp, the default icon pack, and the translations. The single-file executable extracts its contents to a temporary directory when launched.
 
 To run from source, place `libmpv-2.dll` alongside `app.py` and run `python app.py`.
 

@@ -42,6 +42,7 @@
   "language": "Langue",
   "language_hint": "L'application redémarre pour appliquer la langue.",
   "not_playing": "Aucune lecture",
+  "no_song": "Aucune chanson",
   "volume": "VOLUME",
   "find_stations": "＋ Rechercher des stations",
   "no_audio": "Aucun son trouvé pour cette URL.",
@@ -66,6 +67,7 @@
   "window_background": "Fond de la fenêtre",
   "surface_color": "Tableaux et champs",
   "accent_color": "Accent et boutons",
+  "windows_accent": "Utiliser la couleur d'accentuation Windows",
   "muted_color": "Texte secondaire",
   "border_color": "Bordures",
   "selected_color": "Ligne sélectionnée"
