@@ -21,7 +21,7 @@ python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The script downloads a pinned libmpv NuGet package, verifies its SHA-256, and builds `dist\RadioPlusPlus-Qt-v14.exe`, which includes Python, yt-dlp, the default icon pack, and the translations. The single-file executable extracts its contents to a temporary directory when launched.
+The script downloads a pinned libmpv NuGet package, verifies its SHA-256, and builds `dist\RadioPlusPlus-Qt-vXX.exe`, which includes Python, yt-dlp, the default icon pack, and the translations. The single-file executable extracts its contents to a temporary directory when launched.
 
 To run from source, place `libmpv-2.dll` alongside `app.py` and run `python app.py`.
 
